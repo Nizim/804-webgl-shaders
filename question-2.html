@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Q2 - Systeme solaire</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <link rel="stylesheet" href="css/basic.css">
+  </head>
+  <body>
+    <div id="info"><a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> Q2: Systeme solaire</div>
+    <script id="post-vert" type="x-shader/x-vertex">
+      // Vertex shader
+      uniform float moment; // (général) temps écoulé depuis le début
+      uniform float scale;  // (général) paramètre donnant le gonflement périodique
+      out vec3 fn;       // (sortie) normale au sommet (repère écran)
+      out vec3 vertPos;  // (sortie) coordonnées 3D du sommet (repère écran)
+      out vec3 gblPos;   // (sortie) coordonnées 3D du sommet (repère général)
+      void main() {
+          float t = mod( moment, 6.28318530717958647688 );
+          // On gonfle légèrement le soleil périodiquement en fonction du temps.
+          vec3 scaled_pos = position + scale * (1.0+cos( 2.0*t)) * normal;
+          gblPos = scaled_pos;
+          // On calcule le vecteur normal au sommet dans le repère écran
+          fn = vec3( normalMatrix * normal );
+          // On calcule la position du sommet dans le repère caméra
+          vec4 vertPos4 = modelViewMatrix * vec4( scaled_pos, 1.0 );
+          // On envoie au fragment shader la position du sommet dans
+          // le repère camera.
+          vertPos = vec3(vertPos4) / vertPos4.w;
+          // On indique à OpenGL la position du sommet dans le repère écran/pixel
+          gl_Position = projectionMatrix * vertPos4;
+      }
+    </script>
+
+    <script id="post-frag" type="x-shader/x-fragment">
+      // Fragment/pixel shader
+      in vec3 fn;       // (entrée) normale du pixel (repère écran) (interpolée)
+      in vec3 vertPos;  // (entrée) coordonnées 3D du pixel (repère écran)(interpolées)
+      in vec3 gblPos;   // (entrée) coordonnées 3D du pixel (repère général)(interpolées)
+      uniform float moment; // (général) temps écoulé depuis le début
+      out vec4 outColor;    // (sortie) la couleur de sortie du pixel
+      void main() {
+          float t = mod( moment, 6.28318530717958647688 );
+          vec3 n1 = normalize(fn);
+          float l = abs( n1.z );
+          outColor.rgb = vec3( 1.0 , 0.6+0.4* cos( 4.*gblPos.x + 3.*t ), l );
+          outColor.a = 1.0;
+      }
+    </script>
+
+    <script type="importmap">
+      {
+	  "imports": {
+	      "three": "./three.module.js",
+	      "three/addons/controls/": "./examples/jsm/controls/"
+	  }
+      }
+    </script>
+
+    <script type="module">
+      import * as THREE from 'three';
+      import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+      var renderer = null;
+      var scene    = null;
+      var camera   = null;
+      var controls = null;
+      var curTime  = Date.now();
+      // Systeme solaire
+      var earth      = null;
+      var moon       = null;
+      var earthGroup = null;  // tourne autour du soleil
+      var earthSystem = null; // translate par rapport au soleil
+      var moonGroup  = null;  // tourne autour de la terre
+
+      // Shader du soleil
+      var shader   = null;
+      var uniforms = null;
+
+      init();
+      run();
+
+      // This function is called whenever the document is loaded
+      function init() {
+
+	  // Create the Three.js renderer
+	  renderer = new THREE.WebGLRenderer( { antialias: true } );
+	  renderer.setSize( window.innerWidth, window.innerHeight );
+	  document.body.appendChild( renderer.domElement );
+
+	  // Ombres
+	  renderer.shadowMap.enabled = true;
+	  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+	  // Create a new Three.js scene
+	  scene = new THREE.Scene();
+
+	  // Fond voie lactee
+	  var path = "images/MilkyWay/";
+	  var format = '.jpg';
+	  var urls = [
+	      path + 'posx' + format, path + 'negx' + format,
+	      path + 'posy' + format, path + 'negy' + format,
+	      path + 'posz' + format, path + 'negz' + format
+	  ];
+	  var textureCube = new THREE.CubeTextureLoader().load( urls );
+	  textureCube.type = THREE.UnsignedByteType;
+	  textureCube.format = THREE.RGBAFormat;
+	  scene.background = textureCube;
+
+	  // Add  a camera so we can view the scene
+	  camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight,
+						1, 4000 );
+	  camera.position.set( 0, 10, 20 );
+
+	  // Lumiere ponctuelle au centre (soleil)
+	  var light = new THREE.PointLight( 0xffffff, 2.5, 0.0, 0.0 );
+	  light.position.set( 0, 0, 0 );
+	  // La lumiere projette des ombres
+	  light.castShadow = true;
+	  light.shadow.mapSize.width = 512;
+	  light.shadow.mapSize.height = 512;
+	  light.shadow.camera.near = 0.5;
+	  light.shadow.camera.far = 50;
+	  scene.add( light );
+
+	  var loader = new THREE.TextureLoader();
+	  // Geometrie sphere
+	  var geometry = new THREE.SphereGeometry( 1, 32, 32 );
+
+	  // Soleil
+	  var sunMat = new THREE.MeshBasicMaterial({ color: 0xffcc00 });
+	  var sun = new THREE.Mesh( geometry, sunMat );
+	  sun.scale.set( 1.5, 1.5, 1.5 );
+	  sun.castShadow = false;
+	  sun.receiveShadow = false;
+	  scene.add( sun );
+
+	  // Halo du soleil (shader)
+	  uniforms = {
+	      moment: { value: 0.0 },
+	      scale:  { value: 0.02 }
+	  };
+	  shader = new THREE.ShaderMaterial( {
+	      vertexShader:   document.querySelector( '#post-vert' ).textContent.trim(),
+	      fragmentShader: document.querySelector( '#post-frag' ).textContent.trim(),
+	      uniforms: uniforms
+	  } );
+	  shader.glslVersion = THREE.GLSL3;
+	  var sunHalo = new THREE.Mesh( geometry, shader );
+	  sunHalo.scale.set( 1.5, 1.5, 1.5 );
+	  sunHalo.castShadow = false;
+	  sunHalo.receiveShadow = false;
+	  scene.add( sunHalo );
+
+	  // earthGroup tourne autour du soleil
+	  earthGroup = new THREE.Group();
+	  scene.add( earthGroup );
+
+	  // earthSystem est translate loin du soleil
+	  earthSystem = new THREE.Group();
+	  earthSystem.position.x = 5;
+	  earthGroup.add( earthSystem );
+
+	  // Terre avec MeshPhongMaterial
+	  var earthMat = new THREE.MeshPhongMaterial({
+	      map: loader.load( "images/earth_atmos_2048.jpg" ),
+	      specular: new THREE.Color( 0xffffff ),
+	      shininess: 30
+	  });
+	  earth = new THREE.Mesh( geometry, earthMat );
+	  // la terre est inclinee par rapport a son orbite
+	  earth.rotation.x = Math.PI / 5;
+	  earth.castShadow = true;
+	  earth.receiveShadow = true;
+	  earthSystem.add( earth );
+
+	  // Lune
+	  moonGroup = new THREE.Group();
+	  earthSystem.add( moonGroup );
+
+	  var moonMat = new THREE.MeshPhongMaterial({
+	      map: loader.load( "images/moon_1024.jpg" )
+	  });
+	  moon = new THREE.Mesh( geometry, moonMat );
+	  moon.scale.set( 0.27, 0.27, 0.27 );
+	  moon.position.x = 2;
+	  moon.castShadow = true;
+	  moon.receiveShadow = true;
+	  moonGroup.add( moon );
+
+	  // Controle camera a la souris
+	  controls = new OrbitControls( camera, renderer.domElement );
+	  controls.enableDamping = true;
+	  controls.dampingFactor = 0.25;
+	  controls.screenSpacePanning = false;
+	  controls.minDistance = 1;
+	  controls.maxDistance = 10;
+	  controls.maxPolarAngle = Math.PI / 2;
+      }
+
+      // This function is called regularly to update the canvas webgl.
+      function run() {
+	  // Ask to call again run
+	  requestAnimationFrame( run );
+
+	  // Render the scene
+	  render();
+
+	  // Calls the animate function if objects or camera should move
+	  animate();
+      }
+
+      // This function is called regularly to take care of the rendering.
+      function render() {
+	  // Render the scene
+	  renderer.render( scene, camera );
+      }
+
+      // This function is called regularly to update objects.
+      function animate() {
+	  // Computes how time has changed since last display
+	  var now       = Date.now();
+	  var deltaTime = now - curTime;
+	  curTime       = now;
+	  var fracTime  = deltaTime / 1000; // in seconds
+
+	  // Rotations et orbites
+	  var angle = fracTime * Math.PI * 2;
+	  earthGroup.rotation.y += angle / 365;  // la terre tourne en 365 jours
+	  earth.rotation.y      += angle;         // et en un jour sur elle-meme
+	  moonGroup.rotation.y  += angle / 28;    // la lune tourne en 28 jours autour de la terre
+	  moon.rotation.y       += angle / 28;    // et en 28 jours aussi sur elle-meme
+
+	  // Shader du soleil
+	  shader.uniforms.moment.value += fracTime;
+
+	  // La camera suit la terre
+	  var pos = new THREE.Vector3;
+	  pos.setFromMatrixPosition( earth.matrixWorld );
+	  controls.target.copy( pos );
+	  controls.update();
+      }
+
+    </script>
+
+  </body>
+</html>
